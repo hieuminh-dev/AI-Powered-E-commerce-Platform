@@ -77,6 +77,4 @@ A full-stack e-commerce platform featuring an intelligent AI shopping assistant,
 - Update documentation
 - Ensure code passes linting
 
-## License
-
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
