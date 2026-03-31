@@ -16,7 +16,7 @@ Full-stack e-commerce platform featuring an intelligent AI shopping assistant, v
 
 ### **Advanced Search & Discovery**
 
-- Vector-based product discovery using Pinecone
+- Vector-based product discovery using Pinecones
 - Find products by description, features, or use cases
 - Price range, brand, category, ratings, and availability
 - Context-aware product suggestions
