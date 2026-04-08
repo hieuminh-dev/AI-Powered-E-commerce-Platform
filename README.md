@@ -9,7 +9,7 @@ Full-stack e-commerce platform featuring an intelligent AI shopping assistant, v
 
 ### **AI Shopping Assistant**
 
-- Natural language product search and recommendations
+- Natural language product search and recommendation
 - State-of-the-art AI with 1M token context window
 - Advanced conversation memory and tool orchestration
 - AI-driven product suggestions based on user behavior.
