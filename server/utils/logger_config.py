@@ -5,7 +5,6 @@ import os
 
 
 def setup_logging(app):
-    """Setup application logging"""
 
     if not os.path.exists("logs"):
         os.makedirs("logs")

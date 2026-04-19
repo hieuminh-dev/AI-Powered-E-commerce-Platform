@@ -1,6 +1,6 @@
 # S-TORE: AI-Powered E-commerce Platform
 
-A full-stack e-commerce platform featuring an intelligent AI shopping assistant, vector-based product search with Pinecone, and a modern React/Next.js frontend. **Chatbot with advanced product search, recommendations, and order/cart management.**
+Full-stack e-commerce platform featuring an intelligent AI shopping assistant, vector-based product search with Pinecone, and a modern React/Next.js frontend. **Chatbot with advanced product search, recommendations, and order/cart management.**
 
 ![alt text](.github/res/image-1.png)
 ![alt text](.github/res/image.png)
@@ -12,11 +12,11 @@ A full-stack e-commerce platform featuring an intelligent AI shopping assistant,
 - Natural language product search and recommendations
 - State-of-the-art AI with 1M token context window
 - Advanced conversation memory and tool orchestration
-- AI-driven product suggestions based on user behavior
+- AI-driven product suggestions based on user behavior.
 
 ### **Advanced Search & Discovery**
 
-- Vector-based product discovery using Pinecone
+- Vector-based product discovery using Pinecones
 - Find products by description, features, or use cases
 - Price range, brand, category, ratings, and availability
 - Context-aware product suggestions
@@ -76,7 +76,5 @@ A full-stack e-commerce platform featuring an intelligent AI shopping assistant,
 - Add tests for new features
 - Update documentation
 - Ensure code passes linting
-
-## License
 
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
