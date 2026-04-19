@@ -29,7 +29,8 @@ Prerequisites
 
 - Python 3.12+
 - Pinecone account and API key
-- Google AI Studio API key
+- Google AI Studio API key (optional if using Groq)
+- Groq API key (optional; when set, used instead of Gemini for chat)
 
 Environment Setup
 
@@ -39,10 +40,14 @@ source venv/bin/activate
 uv sync
 
 cp .env.example .env
+GROQ_API_KEY=your-groq-api-key-here
+# Optional: defaults to llama-3.1-8b-instant
+GROQ_MODEL=llama-3.1-8b-instant
 GOOGLE_API_KEY=your-google-api-key-here
 PINECONE_API_KEY=your-pinecone-api-key-here
-PINECONE_INDEX_NAME=ecommerce-products
+PINECONE_INDEX_NAME=ecommerce-chatbot-1
 JWT_SECRET_KEY=your-jwt-secret-key-here
+PORT=5001
 ```
 
 ### DB & Pinecone Setup
@@ -57,9 +62,11 @@ python -m scripts.index_all_products
 ### Run the Application
 
 ```bash
-flask run --debug
-flask run
+python run.py
 ```
+
+By default the app uses port `5001` to avoid common conflicts with Docker/WSL on `5000`.
+If the configured port is busy, `run.py` will auto-select the next available port and log it.
 
 ## API Endpoints
 

@@ -16,7 +16,7 @@ A modern, responsive e-commerce frontend built with Next.js 15, featuring an AI 
 cd apps/web
 bun install
 
-NEXT_PUBLIC_API_URL=http://localhost:5000
+NEXT_PUBLIC_API_URL=http://localhost:5001
 ```
 
 ### Development Server

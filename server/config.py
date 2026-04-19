@@ -20,6 +20,10 @@ class Config:
 
     GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
+    # Optional: when set, ChatGroq is preferred over Gemini for /api/chat.
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+    GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+
     PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
     PINECONE_ENVIRONMENT = os.environ.get("PINECONE_ENVIRONMENT")
     # Support either PINECONE_INDEX_NAME or older PINECONE_INDEX env var. Default to 'ecommerce-chatbot'.

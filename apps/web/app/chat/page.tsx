@@ -123,10 +123,10 @@ export default function ChatPage() {
         setMessages([]);
       }
     } catch (error) {
-      console.error("Failed to fetch chat history:", error);
       // If session doesn't exist yet (404), create a welcome message
       // This happens when a session is created locally but not yet persisted to DB
       if ((error as any).response?.status === 404) {
+        // Local/new session: history is expected to be empty until first message is sent.
         setMessages([
           {
             id: "welcome",
@@ -141,6 +141,7 @@ export default function ChatPage() {
           },
         ]);
       } else {
+        console.error("Failed to fetch chat history:", error);
         // For other errors, set empty array to prevent crashes
         setMessages([]);
       }

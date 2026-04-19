@@ -1,7 +1,9 @@
 import json
 import logging
+import time
 import uuid
 from typing import Any, Dict, List, Optional
+from sqlalchemy import or_
 
 from flask import current_app
 # Import AgentType from possible locations for compatibility across langchain versions
@@ -66,6 +68,14 @@ try:
     from langchain_google_genai import ChatGoogleGenerativeAI
 except Exception:
     ChatGoogleGenerativeAI = None
+try:
+    from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+except Exception:
+    ChatGoogleGenerativeAIError = Exception
+try:
+    from langchain_groq import ChatGroq
+except Exception:
+    ChatGroq = None
 from models.chat_session import ChatSession
 from models.message import Message
 from models.product import Product
@@ -87,26 +97,77 @@ class ChatService:
         self.cart_service = CartService()
         self.memory_sessions = {}
         self.initialized = False
+        self._llm_retry_after_ts = 0.0
+        self._llm_provider: Optional[str] = None
+
+    @staticmethod
+    def _is_llm_rate_limited(err_text: str) -> bool:
+        if not err_text:
+            return False
+        upper = err_text.upper()
+        return (
+            "429" in err_text
+            or "RESOURCE_EXHAUSTED" in upper
+            or "RATE_LIMIT" in upper
+        )
+
+    @property
+    def llm_provider(self) -> Optional[str]:
+        """Active LLM backend when `self.llm` is set: groq, gemini, or None."""
+        return self._llm_provider
 
     def initialize(self):
         """Initialize LangChain components"""
         try:
+            logger.info("Chat service initialization started")
 
-            if ChatGoogleGenerativeAI is None or not current_app.config.get("GOOGLE_API_KEY"):
-                logger.warning("ChatGoogleGenerativeAI or GOOGLE_API_KEY not available; LLM disabled")
-                self.llm = None
-            else:
+            self.llm = None
+            self._llm_provider = None
+
+            groq_key = current_app.config.get("GROQ_API_KEY")
+            if ChatGroq and groq_key:
+                try:
+                    self.llm = ChatGroq(
+                        api_key=groq_key,
+                        model=current_app.config.get(
+                            "GROQ_MODEL", "llama-3.1-8b-instant"
+                        ),
+                        temperature=0.7,
+                        max_tokens=1024,
+                        max_retries=1,
+                    )
+                    self._llm_provider = "groq"
+                    logger.info("LLM enabled: Groq (%s)", current_app.config.get("GROQ_MODEL"))
+                except Exception as e:
+                    logger.warning("ChatGroq initialization failed: %s", e)
+
+            if self.llm is None and ChatGoogleGenerativeAI and current_app.config.get(
+                "GOOGLE_API_KEY"
+            ):
                 self.llm = ChatGoogleGenerativeAI(
                     model="gemini-2.0-flash",
                     google_api_key=current_app.config["GOOGLE_API_KEY"],
                     temperature=0.7,
                     max_tokens=1000,
+                    max_retries=1,
                     convert_system_message_to_human=True,
+                )
+                self._llm_provider = "gemini"
+                logger.info("LLM enabled: Gemini (gemini-2.0-flash)")
+
+            if self.llm is None:
+                logger.warning(
+                    "No LLM configured; set GROQ_API_KEY and/or GOOGLE_API_KEY. "
+                    "Chat will use keyword/vector fallback only."
                 )
 
             # initialize vector service (embedding model) - may work without Pinecone
             try:
                 self.vector_service.initialize()
+                logger.info(
+                    "Vector diagnostics after init: %s",
+                    self.vector_service.get_diagnostics(),
+                )
             except Exception as e:
                 logger.warning(f"Vector service failed to initialize: {e}")
 
@@ -373,6 +434,63 @@ class ChatService:
                 product_names.append(product.name)
         return product_names
 
+    def _detect_fallback_intent(self, text: str) -> str:
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return "empty"
+
+        greeting_words = ["chào", "hello", "hi", "xin chào", "hey"]
+        recommend_words = ["gợi ý", "đề xuất", "recommend", "suggest"]
+        product_words = [
+            "mua",
+            "tìm",
+            "sản phẩm",
+            "điện thoại",
+            "laptop",
+            "tai nghe",
+            "iphone",
+            "samsung",
+            "sony",
+            "bose",
+            "giá",
+        ]
+
+        if any(word in normalized for word in greeting_words) and not any(
+            word in normalized for word in product_words
+        ):
+            return "greeting_only"
+
+        if any(word in normalized for word in recommend_words):
+            return "recommendation"
+
+        return "product_search"
+
+    def _compose_fallback_product_reply(
+        self, user_message: str, products: List[Product], source: str
+    ) -> str:
+        intent = self._detect_fallback_intent(user_message)
+        if intent == "recommendation":
+            intro = "Mình gợi ý nhanh cho bạn vài sản phẩm đáng cân nhắc:"
+        elif intent == "product_search":
+            intro = "Mình đã tìm được một số sản phẩm phù hợp với nhu cầu của bạn:"
+        else:
+            intro = "Mình có vài sản phẩm bạn có thể tham khảo:"
+
+        lines = [intro]
+        for product in products[:6]:
+            lines.append(f"- {product.name} ({product.brand}) - ${product.price}")
+
+        if source == "keyword":
+            lines.append(
+                "Nếu bạn muốn chính xác hơn, bạn nói thêm mức giá, thương hiệu hoặc mục đích sử dụng nhé."
+            )
+        else:
+            lines.append(
+                "Bạn muốn mình lọc tiếp theo giá, thương hiệu hay loại sản phẩm không?"
+            )
+
+        return "\n".join(lines)
+
     def process_message(
         self, session_id: str, user_message: str, user_id: str = None
     ) -> Dict[str, Any]:
@@ -410,35 +528,172 @@ class ChatService:
 
             tools = self.create_tools()
 
-            # If initialize_agent or LLM is not available, use a simple fallback handler
-            if initialize_agent is None or self.llm is None:
-                logger.info("Using fallback chat handler (no langchain agent available)")
-
-                # Ensure vector service is initialized / re-check the index before searching
+            # Use LLM directly when available; no dependency on legacy initialize_agent APIs.
+            llm_temporarily_blocked = time.time() < self._llm_retry_after_ts
+            if self.llm is not None and not llm_temporarily_blocked:
                 try:
-                    if not getattr(self.vector_service, "index", None):
-                        logger.info("Vector index not present, attempting to re-initialize vector service")
-                        try:
-                            self.vector_service.initialize()
-                        except Exception as e_init:
-                            logger.warning(f"Re-initializing vector service failed: {e_init}")
+                    logger.info(
+                        "Using direct LLM handler (provider=%s)",
+                        self._llm_provider or "unknown",
+                    )
+                    prompt = (
+                        "Bạn là trợ lý mua sắm tiếng Việt thân thiện. "
+                        "Trả lời tự nhiên, ngắn gọn, ưu tiên gợi ý rõ ràng theo nhu cầu user. "
+                        "Nếu user chào hỏi, hãy chào lại thân thiện và hỏi nhu cầu mua sắm."
+                    )
+                    if SystemMessage and HumanMessage:
+                        llm_response = self.llm.invoke(
+                            [
+                                SystemMessage(content=prompt),
+                                HumanMessage(content=user_message),
+                            ]
+                        )
+                    else:
+                        llm_response = self.llm.invoke(
+                            f"{prompt}\n\nNgười dùng: {user_message}"
+                        )
 
-                    similar = self.vector_service.search_similar_products(user_message, top_k=6)
-                except Exception:
-                    logger.exception("Error while performing semantic search")
-                    similar = []
+                    llm_text = getattr(llm_response, "content", llm_response)
+                    if isinstance(llm_text, list):
+                        llm_text = "\n".join([str(x) for x in llm_text if x])
+                    llm_text = str(llm_text).strip()
+                    result = {"output": llm_text or "Mình đang sẵn sàng hỗ trợ bạn chọn sản phẩm."}
+                except ChatGoogleGenerativeAIError as e:
+                    err_text = str(e)
+                    if self._is_llm_rate_limited(err_text):
+                        self._llm_retry_after_ts = time.time() + 120
+                        logger.warning(
+                            "Gemini rate/quota error. Temporarily disabling LLM for 120s."
+                        )
+                    else:
+                        logger.warning("Direct Gemini handler failed: %s", err_text)
+                    result = None
+                except Exception as e:
+                    err_text = str(e)
+                    if self._is_llm_rate_limited(err_text):
+                        self._llm_retry_after_ts = time.time() + 120
+                        logger.warning(
+                            "LLM rate/quota error (provider=%s). Cooldown 120s.",
+                            self._llm_provider,
+                        )
+                    else:
+                        logger.warning("Direct LLM handler failed: %s", err_text)
+                    result = None
+            elif self.llm is not None and llm_temporarily_blocked:
+                remaining = int(max(0, self._llm_retry_after_ts - time.time()))
+                logger.info(
+                    "Skipping LLM call during cooldown after rate/quota error (%ss remaining)",
+                    remaining,
+                )
+                result = None
+            else:
+                result = None
 
-                if similar:
-                    product_ids = [p["id"] for p in similar]
-                    products = Product.query.filter(Product.id.in_(product_ids)).all()
-                    message_text = "Tôi tìm thấy các sản phẩm sau phù hợp với yêu cầu của bạn:\n"
-                    for product in products[:6]:
-                        message_text += f"- {product.name} by {product.brand} - ${product.price}\n"
-                    result = {"output": message_text}
+            # If LLM is unavailable (or failed), use semantic-search fallback handler.
+            if result is None:
+                logger.info(
+                    "Using fallback chat handler (llm_available=%s)",
+                    self.llm is not None,
+                )
+                intent = self._detect_fallback_intent(user_message)
+                logger.info("Fallback intent detected: %s", intent)
+
+                if intent in ["empty", "greeting_only"]:
+                    result = {
+                        "output": (
+                            "Chào bạn. Mình có thể giúp bạn tìm sản phẩm theo nhu cầu, "
+                            "ví dụ: 'tôi muốn tai nghe chống ồn dưới 2 triệu' hoặc 'gợi ý điện thoại chụp ảnh tốt'."
+                        )
+                    }
                 else:
-                    # No semantic results — fallback generic reply
-                    message_text = "Xin lỗi, chức năng trợ lý nâng cao chưa được cấu hình. Bạn có thể tìm sản phẩm qua API /api/products hoặc mô tả rõ hơn yêu cầu."
-                    result = {"output": message_text}
+                    result = None
+
+                if result is None:
+                    # Ensure vector service is initialized / re-check the index before searching
+                    try:
+                        if not getattr(self.vector_service, "index", None):
+                            logger.info(
+                                "Vector index not present, attempting re-initialize. diagnostics_before=%s",
+                                self.vector_service.get_diagnostics(),
+                            )
+                            try:
+                                self.vector_service.initialize()
+                                logger.info(
+                                    "Vector diagnostics after re-init: %s",
+                                    self.vector_service.get_diagnostics(),
+                                )
+                            except Exception as e_init:
+                                logger.warning(f"Re-initializing vector service failed: {e_init}")
+
+                        similar = self.vector_service.search_similar_products(user_message, top_k=6)
+                        logger.info(
+                            "Fallback semantic search completed: query_len=%s result_count=%s",
+                            len(user_message or ""),
+                            len(similar),
+                        )
+                    except Exception:
+                        logger.exception("Error while performing semantic search")
+                        similar = []
+
+                    if similar:
+                        product_ids = [p["id"] for p in similar]
+                        products = Product.query.filter(Product.id.in_(product_ids)).all()
+                        result = {
+                            "output": self._compose_fallback_product_reply(
+                                user_message, products, source="semantic"
+                            )
+                        }
+                    else:
+                        # No semantic results: fallback to DB keyword search before generic reply.
+                        terms = [t.strip() for t in (user_message or "").split() if len(t.strip()) >= 2]
+                        keyword_products = []
+                        if terms:
+                            try:
+                                conditions = []
+                                for term in terms[:6]:
+                                    like_term = f"%{term}%"
+                                    conditions.extend(
+                                        [
+                                            Product.name.ilike(like_term),
+                                            Product.description.ilike(like_term),
+                                            Product.brand.ilike(like_term),
+                                            Product.category.ilike(like_term),
+                                        ]
+                                    )
+                                keyword_products = (
+                                    Product.query.filter(or_(*conditions))
+                                    .limit(6)
+                                    .all()
+                                )
+                                logger.info(
+                                    "Keyword fallback search completed: terms=%s result_count=%s",
+                                    terms[:6],
+                                    len(keyword_products),
+                                )
+                            except Exception:
+                                logger.exception("Keyword fallback search failed")
+
+                        if keyword_products:
+                            result = {
+                                "output": self._compose_fallback_product_reply(
+                                    user_message, keyword_products, source="keyword"
+                                )
+                            }
+                        else:
+                            # No semantic and no keyword result — fallback generic reply
+                            logger.warning(
+                                "No semantic result and no keyword result; returning generic fallback"
+                            )
+                            message_text = (
+                                "Mình chưa tìm thấy sản phẩm phù hợp ngay lúc này. "
+                                "Bạn thử nói rõ hơn giúp mình về loại sản phẩm, tầm giá hoặc thương hiệu nhé."
+                            )
+                            result = {"output": message_text}
+
+                        logger.warning(
+                            "Fallback semantic search returned no results; diagnostics=%s",
+                            self.vector_service.get_diagnostics(),
+                        )
             ai_response = (
                 result["output"] if isinstance(result, dict) and "output" in result else result
             )

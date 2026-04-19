@@ -16,12 +16,14 @@ chat_service = ChatService()
 def send_message():
     """Send a message to the chatbot"""
     try:
+        request_id = str(uuid.uuid4())
         # log raw body for debugging malformed JSON / client issues
         try:
             raw_body = request.data.decode("utf-8")
         except Exception:
             raw_body = str(request.data)
-        logger.info(f"Raw request body: {raw_body}")
+        safe_body = raw_body.encode("ascii", "backslashreplace").decode("ascii")
+        logger.info("chat.message request_id=%s raw_body=%s", request_id, safe_body)
 
         data = request.get_json()
 
@@ -41,6 +43,13 @@ def send_message():
             pass
 
         response = chat_service.process_message(session_id, user_message, user_id)
+        logger.info(
+            "chat.message request_id=%s session_id=%s response_type=%s product_count=%s",
+            request_id,
+            session_id,
+            response.get("type"),
+            len(response.get("products", []) or []),
+        )
 
         return jsonify(
             {"success": True, "response": response, "session_id": session_id}
@@ -179,10 +188,37 @@ def clear_session(session_id):
 def chat_health():
     """Check chat service health"""
     try:
+        logger.info("chat.health check started")
         if not chat_service.initialized:
+            logger.info("chat.health chat_service not initialized, initializing")
             chat_service.initialize()
 
-        vector_stats = chat_service.vector_service.get_index_stats()
+        logger.info("chat.health fetching vector stats")
+        try:
+            raw_vector_stats = chat_service.vector_service.get_index_stats()
+            # Pinecone SDK objects may not be directly JSON serializable.
+            if hasattr(raw_vector_stats, "to_dict") and callable(raw_vector_stats.to_dict):
+                vector_stats = raw_vector_stats.to_dict()
+            elif isinstance(raw_vector_stats, dict):
+                vector_stats = raw_vector_stats
+            elif raw_vector_stats:
+                vector_stats = {"raw": str(raw_vector_stats)}
+            else:
+                vector_stats = {}
+        except Exception:
+            logger.exception("chat.health get_index_stats failed unexpectedly")
+            vector_stats = {}
+
+        logger.info("chat.health fetching vector diagnostics")
+        try:
+            vector_diagnostics = chat_service.vector_service.get_diagnostics()
+        except Exception:
+            logger.exception("chat.health get_diagnostics failed unexpectedly")
+            vector_diagnostics = {
+                "initialized": chat_service.vector_service.initialized,
+                "pinecone_available": bool(getattr(chat_service.vector_service, "index", None)),
+                "error": "failed_to_collect_diagnostics",
+            }
 
         return jsonify(
             {
@@ -196,11 +232,13 @@ def chat_health():
                     if chat_service.vector_service.initialized
                     else "not_initialized",
                     "llm": "connected" if chat_service.llm else "not_connected",
+                    "llm_provider": chat_service.llm_provider or "none",
                 },
                 "vector_stats": vector_stats,
+                "vector_diagnostics": vector_diagnostics,
             }
         ), 200
 
     except Exception as e:
-        logger.error(f"Error in chat_health endpoint: {str(e)}")
+        logger.exception("Error in chat_health endpoint")
         return jsonify({"success": False, "status": "unhealthy", "error": str(e)}), 500

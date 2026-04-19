@@ -39,15 +39,11 @@ def add_to_cart():
         if not user_id or not product_id:
             return jsonify({"error": "user_id and product_id are required"}), 400
 
-        cart_item = cart_service.add_to_cart(user_id, product_id, quantity)
-        return jsonify(
-            {
-                **cart_item.to_dict(),
-                "product": cart_item.product.to_dict()
-                if hasattr(cart_item, "product") and cart_item.product
-                else None,
-            }
-        ), 200
+        result = cart_service.add_to_cart(user_id, product_id, quantity)
+        if not result.get("success"):
+            return jsonify(result), 400
+
+        return jsonify(result), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -68,12 +64,10 @@ def remove_from_cart():
         if not user_id or not item_id:
             return jsonify({"error": "user_id and item_id are required"}), 400
 
-        success = cart_service.remove_from_cart(user_id, item_id)
-
-        if success:
-            return jsonify({"success": True, "message": "Item removed from cart"}), 200
-        else:
-            return jsonify({"success": False, "message": "Item not found"}), 404
+        result = cart_service.remove_from_cart(user_id, item_id)
+        if result.get("success"):
+            return jsonify(result), 200
+        return jsonify(result), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -97,23 +91,15 @@ def update_cart_quantity():
 
         if quantity <= 0:
             # Remove item if quantity is 0 or negative
-            success = cart_service.remove_from_cart(user_id, item_id)
-            if success:
-                return jsonify({"success": True, "message": "Item removed from cart"}), 200
-            else:
-                return jsonify({"success": False, "message": "Item not found"}), 404
+            result = cart_service.remove_from_cart(user_id, item_id)
+            if result.get("success"):
+                return jsonify(result), 200
+            return jsonify(result), 404
         else:
-            cart_item = cart_service.update_cart_quantity(user_id, item_id, quantity)
-            if cart_item:
-                return jsonify(
-                    {
-                        "success": True,
-                        "message": "Cart updated",
-                        "item": cart_item.to_dict(),
-                    }
-                ), 200
-            else:
-                return jsonify({"success": False, "message": "Item not found"}), 404
+            result = cart_service.update_cart_quantity(user_id, item_id, quantity)
+            if result.get("success"):
+                return jsonify(result), 200
+            return jsonify(result), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -133,11 +119,9 @@ def clear_cart():
         if not user_id:
             return jsonify({"error": "user_id is required"}), 400
 
-        success = cart_service.clear_cart(user_id)
-
-        if success:
-            return jsonify({"success": True, "message": "Cart cleared"}), 200
-        else:
-            return jsonify({"success": False, "message": "Failed to clear cart"}), 500
+        result = cart_service.clear_cart(user_id)
+        if result.get("success"):
+            return jsonify(result), 200
+        return jsonify(result), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
